@@ -5,7 +5,7 @@ import time
 import cv2
 import numpy as np
 
-from ...domain.models import DomNode, MatchResult, ScoredCandidate
+from ...domain.models import DomNode, MatchResult, PagePair, ScoredCandidate
 from ..base import ElementMatcher
 
 UPSTREAM_REPOSITORY = "https://github.com/saltlab/vista"
@@ -17,9 +17,52 @@ class VistaMatcher(ElementMatcher):
 
     NNDR_RATIO = 1.0
 
+    def __init__(self) -> None:
+        self._old_image: np.ndarray | None = None
+        self._new_image: np.ndarray | None = None
+        self._new_gray: np.ndarray | None = None
+        self._scene_sift_descriptors: np.ndarray | None = None
+        self._scene_fast_descriptors: np.ndarray | None = None
+        self._prepare_status: str | None = None
+
     @property
     def name(self) -> str:
         return "VISTA"
+
+    def prepare(self, page_pair: PagePair) -> None:
+        """Load and preprocess the page-level visual data."""
+        super().prepare(page_pair)
+        self._clear_cache()
+
+        old_path = page_pair.old_page.full_screen_path
+        new_path = page_pair.new_page.full_screen_path
+        if old_path is None or new_path is None:
+            self._prepare_status = "missing_screenshot"
+            return
+
+        self._old_image = cv2.imread(str(old_path), cv2.IMREAD_COLOR)
+        self._new_image = cv2.imread(str(new_path), cv2.IMREAD_COLOR)
+        if self._old_image is None or self._new_image is None:
+            self._prepare_status = "unreadable_screenshot"
+            return
+
+        try:
+            self._new_gray = cv2.cvtColor(self._new_image, cv2.COLOR_BGR2GRAY)
+            self._scene_sift_descriptors = self._sift_scene_descriptors(self._new_gray)
+            self._scene_fast_descriptors = self._fast_scene_descriptors(self._new_gray)
+        except cv2.error:
+            self._prepare_status = "feature_gate_failed"
+
+    def _clear_cache(self) -> None:
+        self._old_image = None
+        self._new_image = None
+        self._new_gray = None
+        self._scene_sift_descriptors = None
+        self._scene_fast_descriptors = None
+        self._prepare_status = None
+
+    def close(self) -> None:
+        self._clear_cache()
 
     @staticmethod
     def _crop_reference(image: np.ndarray, node: DomNode) -> np.ndarray | None:
@@ -39,7 +82,10 @@ class VistaMatcher(ElementMatcher):
         return crop if crop.size else None
 
     @staticmethod
-    def _flann_good_matches(desc1: np.ndarray, desc2: np.ndarray) -> int:
+    def _flann_good_matches(
+        desc1: np.ndarray | None,
+        desc2: np.ndarray | None,
+    ) -> int:
         if desc1 is None or desc2 is None or len(desc1) == 0 or len(desc2) < 2:
             return 0
         desc1 = np.asarray(desc1, dtype=np.float32)
@@ -55,30 +101,63 @@ class VistaMatcher(ElementMatcher):
                 good += 1
         return good
 
-    @classmethod
-    def _sift_gate(cls, template_gray: np.ndarray, scene_gray: np.ndarray) -> bool:
+    @staticmethod
+    def _sift_scene_descriptors(scene_gray: np.ndarray) -> np.ndarray | None:
         sift = cv2.SIFT_create()
-        kp1, desc1 = sift.detectAndCompute(template_gray, None)
-        _kp2, desc2 = sift.detectAndCompute(scene_gray, None)
-        if not kp1:
+        _keypoints, descriptors = sift.detectAndCompute(scene_gray, None)
+        return descriptors
+
+    @staticmethod
+    def _fast_scene_descriptors(scene_gray: np.ndarray) -> np.ndarray | None:
+        fast = cv2.FastFeatureDetector_create()
+        keypoints = fast.detect(scene_gray, None)
+        sift = cv2.SIFT_create()
+        _keypoints, descriptors = sift.compute(scene_gray, keypoints)
+        return descriptors
+
+    @classmethod
+    def _sift_gate_cached(
+        cls,
+        template_gray: np.ndarray,
+        scene_descriptors: np.ndarray | None,
+    ) -> bool:
+        sift = cv2.SIFT_create()
+        keypoints, template_descriptors = sift.detectAndCompute(template_gray, None)
+        if not keypoints:
             return False
-        good = cls._flann_good_matches(desc1, desc2)
-        threshold = int(len(kp1) * 0.3)
+        good = cls._flann_good_matches(template_descriptors, scene_descriptors)
+        threshold = int(len(keypoints) * 0.3)
         return good > threshold
 
     @classmethod
-    def _fast_gate(cls, template_gray: np.ndarray, scene_gray: np.ndarray) -> bool:
+    def _fast_gate_cached(
+        cls,
+        template_gray: np.ndarray,
+        scene_descriptors: np.ndarray | None,
+    ) -> bool:
         fast = cv2.FastFeatureDetector_create()
-        kp1 = fast.detect(template_gray, None)
-        kp2 = fast.detect(scene_gray, None)
-        if not kp1:
+        keypoints = fast.detect(template_gray, None)
+        if not keypoints:
             return False
         sift = cv2.SIFT_create()
-        kp1, desc1 = sift.compute(template_gray, kp1)
-        kp2, desc2 = sift.compute(scene_gray, kp2)
-        good = cls._flann_good_matches(desc1, desc2)
-        threshold = int(len(kp1) * 0.3)
+        keypoints, template_descriptors = sift.compute(template_gray, keypoints)
+        good = cls._flann_good_matches(template_descriptors, scene_descriptors)
+        threshold = int(len(keypoints) * 0.3)
         return good > threshold
+
+    @classmethod
+    def _sift_gate(cls, template_gray: np.ndarray, scene_gray: np.ndarray) -> bool:
+        return cls._sift_gate_cached(
+            template_gray,
+            cls._sift_scene_descriptors(scene_gray),
+        )
+
+    @classmethod
+    def _fast_gate(cls, template_gray: np.ndarray, scene_gray: np.ndarray) -> bool:
+        return cls._fast_gate_cached(
+            template_gray,
+            cls._fast_scene_descriptors(scene_gray),
+        )
 
     @classmethod
     def _feature_gate(cls, template: np.ndarray, scene: np.ndarray) -> bool:
@@ -89,6 +168,23 @@ class VistaMatcher(ElementMatcher):
             # their results; do not short-circuit, because runtime is benchmarked.
             sift_present = cls._sift_gate(template_gray, scene_gray)
             fast_present = cls._fast_gate(template_gray, scene_gray)
+            return sift_present or fast_present
+        except cv2.error:
+            return False
+
+    def _feature_gate_from_cache(self, template: np.ndarray) -> bool:
+        if self._new_gray is None:
+            return False
+        try:
+            template_gray = cv2.cvtColor(template, cv2.COLOR_BGR2GRAY)
+            sift_present = self._sift_gate_cached(
+                template_gray,
+                self._scene_sift_descriptors,
+            )
+            fast_present = self._fast_gate_cached(
+                template_gray,
+                self._scene_fast_descriptors,
+            )
             return sift_present or fast_present
         except cv2.error:
             return False
@@ -105,7 +201,10 @@ class VistaMatcher(ElementMatcher):
         return max_location[0] + tw / 2.0, max_location[1] + th / 2.0
 
     @staticmethod
-    def _smallest_containing_node(point: tuple[float, float], nodes: list[DomNode]) -> DomNode | None:
+    def _smallest_containing_node(
+        point: tuple[float, float],
+        nodes: list[DomNode],
+    ) -> DomNode | None:
         if not nodes:
             return None
         px, py = point
@@ -124,20 +223,16 @@ class VistaMatcher(ElementMatcher):
         source = self.pair.old_page.resolve_node(old_node_id)
         if source is None:
             return MatchResult((), time.perf_counter_ns() - start, "missing_old_node")
-        old_path = self.pair.old_page.full_screen_path
-        new_path = self.pair.new_page.full_screen_path
-        if old_path is None or new_path is None:
-            return MatchResult((), time.perf_counter_ns() - start, "missing_screenshot")
-        old_image = cv2.imread(str(old_path), cv2.IMREAD_COLOR)
-        new_image = cv2.imread(str(new_path), cv2.IMREAD_COLOR)
-        if old_image is None or new_image is None:
+        if self._prepare_status is not None:
+            return MatchResult((), time.perf_counter_ns() - start, self._prepare_status)
+        if self._old_image is None or self._new_image is None:
             return MatchResult((), time.perf_counter_ns() - start, "unreadable_screenshot")
-        template = self._crop_reference(old_image, source)
+        template = self._crop_reference(self._old_image, source)
         if template is None:
             return MatchResult((), time.perf_counter_ns() - start, "invalid_crop")
-        if not self._feature_gate(template, new_image):
+        if not self._feature_gate_from_cache(template):
             return MatchResult((), time.perf_counter_ns() - start, "feature_gate_failed")
-        center = self._template_center(template, new_image)
+        center = self._template_center(template, self._new_image)
         if center is None:
             return MatchResult((), time.perf_counter_ns() - start, "template_match_failed")
         node = self._smallest_containing_node(center, self.pair.new_page.nodes)

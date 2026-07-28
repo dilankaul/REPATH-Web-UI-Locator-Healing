@@ -169,6 +169,8 @@ repath-eval benchmark \
 
 With `--measure-runtime`, each query independently loads page data, constructs and prepares the matcher, and executes the match inside the timer. REPATH resolves or downloads SBERT before timing; timed executions load it locally. Network download time is excluded, while local model loading and inference are included.
 
+In normal fast mode, each matcher is prepared once per page pair and can reuse algorithm-specific page-level state across queries. WATER reuses the loaded page data, SFTM reuses its tree mapping, Similo reuses candidate and neighbour metadata, VISTA reuses decoded screenshots and scene descriptors, WebEvo reuses ordered candidate metadata, and REPATH reuses prepared feature context. With `--measure-runtime`, a fresh page pair and matcher are created and prepared inside every query timer, so initialization, preprocessing, and cache construction are included in the reported end-to-end runtime for every algorithm.
+
 ### Benchmark results
 
 Run the held-out benchmark and enter the resulting values in this table. Top-1 accuracy should come from the normal benchmark output. Mean query execution time should come from a separate run with `--measure-runtime`.
