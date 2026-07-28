@@ -23,8 +23,15 @@ def _new_semantic_model(
     *,
     local_files_only: bool,
 ) -> Any:
-    # Imported lazily so WATER/VISTA/SFTM/WebEvo/Similo can run without loading
-    # PyTorch or SentenceTransformers.
+    from huggingface_hub import logging as hf_logging
+    from huggingface_hub.utils import disable_progress_bars
+    from transformers.utils import logging as transformers_logging
+
+    disable_progress_bars()
+    hf_logging.set_verbosity_error()
+    transformers_logging.set_verbosity_error()
+    transformers_logging.disable_progress_bar()
+
     from sentence_transformers import SentenceTransformer
 
     return SentenceTransformer(

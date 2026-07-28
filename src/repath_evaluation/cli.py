@@ -31,6 +31,13 @@ _ALGORITHM_DISPLAY_NAMES = {
 }
 
 
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return parsed
+
+
 def _select_sites(
     data_root: Path,
     names: list[str] | None,
@@ -328,10 +335,19 @@ def build_parser() -> argparse.ArgumentParser:
     benchmark.add_argument(
         "--algorithms",
         nargs="+",
-        required=True,
+        default=["water", "vista", "sftm", "webevo", "similo", "repath"],
         choices=["water", "vista", "sftm", "webevo", "similo", "repath"],
+        help=(
+            "Algorithms to evaluate "
+            "(default: water vista sftm webevo similo repath)"
+        ),
     )
-    benchmark.add_argument("--repeats", type=int, default=5)
+    benchmark.add_argument(
+        "--repeats",
+        type=_positive_int,
+        default=1,
+        help="Number of complete benchmark repetitions (default: 1)",
+    )
     benchmark.add_argument(
         "--measure-runtime",
         action="store_true",
@@ -341,7 +357,14 @@ def build_parser() -> argparse.ArgumentParser:
             "runtime columns are omitted."
         ),
     )
-    benchmark.add_argument("--output", required=True)
+    benchmark.add_argument(
+        "--output",
+        default="results/benchmark",
+        help=(
+            "Output directory for benchmark files "
+            "(default: results/benchmark; existing files are overwritten)"
+        ),
+    )
     benchmark.add_argument(
         "--repath-model",
         default="models/lgb_ranker.txt",

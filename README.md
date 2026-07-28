@@ -125,12 +125,69 @@ Site and group matching is case-insensitive.
 
 ## Benchmarking
 
+Run the complete benchmark with:
+
+```bash
+repath-eval benchmark
+```
+
+By default, this evaluates WATER, VISTA, SFTM, WebEvo, Similo, and REPATH on the held-out test sites with one repetition. Runtime measurement is disabled, and results are written to `results/benchmark`. Existing result files in that directory are overwritten.
+
+### Benchmark arguments
+
+| Argument | Description | Default |
+| -------- | ----------- | ------- |
+| `--algorithms` | Algorithms to evaluate | `water vista sftm webevo similo repath` |
+| `--sites` | Site group, one site, or multiple explicit sites | `test` |
+| `--repeats` | Number of complete benchmark repetitions; must be a positive integer | `1` |
+| `--measure-runtime` | Enable independent end-to-end timing for every query | Disabled |
+| `--output` | Directory used to save benchmark result files | `results/benchmark` |
+
+Run only the five baseline algorithms:
+
 ```bash
 repath-eval benchmark \
   --algorithms water vista sftm webevo similo \
-  --repeats 5 \
   --output results/baselines_test
 ```
+
+Run a selected subset of algorithms:
+
+```bash
+repath-eval benchmark \
+  --algorithms water similo repath \
+  --output results/selected_algorithms
+```
+
+Run one site:
+
+```bash
+repath-eval benchmark \
+  --sites instagram \
+  --output results/instagram
+```
+
+Run multiple explicit sites:
+
+```bash
+repath-eval benchmark \
+  --sites instagram yahoo xfinity-2018-2020 \
+  --output results/selected_sites
+```
+
+Repeat the complete benchmark five times:
+
+```bash
+repath-eval benchmark \
+  --repeats 5 \
+  --output results/five_repeats
+```
+
+### Optional end-to-end query runtime
+
+Runtime measurement is disabled by default. Fast execution prepares a page pair and matcher once and omits runtime columns.
+
+For more reproducible runtime measurements, restrict common numerical libraries to one CPU thread before running the timed benchmark:
 
 ```bash
 export PYTHONHASHSEED=0
@@ -139,33 +196,11 @@ export MKL_NUM_THREADS=1
 export OPENBLAS_NUM_THREADS=1
 
 repath-eval benchmark \
-  --algorithms water vista sftm webevo similo repath \
-  --sites test \
-  --repeats 5 \
-  --output results/final_benchmark
-```
-
-Single and selected sites remain supported:
-
-```bash
-repath-eval benchmark \
-  --algorithms water vista sftm webevo similo repath \
-  --sites instagram \
-  --output results/instagram
-```
-
-### Optional end-to-end query runtime
-
-Runtime measurement is disabled by default. Fast execution prepares a page pair and matcher once and omits runtime columns.
-
-```bash
-repath-eval benchmark \
-  --algorithms water vista sftm webevo similo repath \
-  --sites test \
-  --repeats 1 \
   --measure-runtime \
   --output results/end_to_end_runtime
 ```
+
+`PYTHONHASHSEED=0` makes Python hash-based ordering deterministic. The thread variables reduce CPU oversubscription and runtime variation between runs.
 
 With `--measure-runtime`, each query independently loads page data, constructs and prepares the matcher, and executes the match inside the timer. REPATH resolves or downloads SBERT before timing; timed executions load it locally. Network download time is excluded, while local model loading and inference are included.
 
@@ -186,7 +221,32 @@ Run the held-out benchmark and enter the resulting values in this table. Top-1 a
 
 ## REPATH confidence-margin calibration
 
-The latest calibration inputs are already included:
+Run the default calibration:
+
+```bash
+repath-eval calibrate
+```
+
+By default, the command selects the confidence-margin threshold using pooled development out-of-fold predictions only. It targets precision `0.99`, requires at least `0.80` end-to-end coverage, evaluates tau values from `0.00` to `1.00` in steps of `0.05`, and writes the outputs to `results/calibration`.
+
+With the bundled artifacts, the default calibration selects `tau = 0.40`.
+
+| Argument | Description | Default |
+| -------- | ----------- | ------- |
+| `--manifest` | Query manifest containing query IDs, sites, and splits | `artifacts/repath/repath_query_manifest.csv` |
+| `--development-scores` | Pooled development out-of-fold candidate scores used for threshold selection | `artifacts/repath/development_oof_candidate_scores.csv` |
+| `--test-scores` | Held-out test candidate scores used only for final evaluation | `artifacts/repath/test_candidate_scores.csv` |
+| `--tau` | Evaluates a fixed threshold instead of selecting one automatically | Not set |
+| `--target-precision` | Minimum development precision required during automatic selection | `0.99` |
+| `--min-end-to-end-coverage` | Minimum development end-to-end coverage required during automatic selection | `0.80` |
+| `--tau-min` | Smallest threshold considered during automatic selection | `0.00` |
+| `--tau-max` | Largest threshold considered during automatic selection | `1.00` |
+| `--tau-step` | Threshold-grid increment | `0.05` |
+| `--output` | Directory used to save calibration results | `results/calibration` |
+| `--base-config` | Base REPATH runtime configuration used to generate a calibrated configuration | Not set |
+| `--config-output` | Output path for the calibrated runtime configuration; requires `--base-config` | Not set |
+
+The latest calibration inputs are included in the repository:
 
 ```text
 artifacts/repath/
@@ -195,21 +255,21 @@ artifacts/repath/
 └── test_candidate_scores.csv
 ```
 
-Automatically select tau using development out-of-fold predictions only:
-
-```bash
-repath-eval calibrate \
-  --output results/calibration_auto
-```
-
-The default selector reproduces the latest notebook protocol: target precision `0.99`, minimum end-to-end coverage `0.80`, and a tau grid from `0.00` to `1.00` in steps of `0.05`. With the bundled artifacts, it selects `tau = 0.40`.
-
-Evaluate that fixed operating point without reselecting it:
+Evaluate the bundled fixed operating point without reselecting it:
 
 ```bash
 repath-eval calibrate \
   --tau 0.40 \
   --output results/calibration_tau_040
+```
+
+Use different automatic-selection constraints:
+
+```bash
+repath-eval calibrate \
+  --target-precision 0.985 \
+  --min-end-to-end-coverage 0.80 \
+  --output results/calibration_custom
 ```
 
 The repository also includes `models/config.pkl`, generated from `models/config_base.pkl` using the selected `tau = 0.40`. Regenerate it after replacing the model or score artifacts with:
@@ -221,7 +281,7 @@ repath-eval calibrate \
   --output results/calibration_auto
 ```
 
-The command reports accepted and correct cases, precision, conditional and end-to-end coverage, conditional and end-to-end recall, and both F1 definitions. Threshold selection never uses held-out test results.
+The command reports accepted and correct cases, precision, conditional and end-to-end coverage, conditional and end-to-end recall, and both F1 definitions. Threshold selection never uses held-out test results. Existing calibration result files in the selected output directory are replaced.
 
 ## Latest REPATH research results
 
