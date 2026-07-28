@@ -21,10 +21,16 @@ def aggregate_summary(site_results: pd.DataFrame) -> pd.DataFrame:
         }
 
         if runtime_enabled:
+            runtime_modes = group["runtime_mode"].dropna().unique()
+            if len(runtime_modes) != 1:
+                raise ValueError(
+                    f"Expected one runtime mode for {algorithm}, got {runtime_modes.tolist()}"
+                )
             runtime_samples = int(group["runtime_samples"].sum())
             runtime_total_ms = float(group["runtime_total_ms"].sum())
             record.update(
                 {
+                    "runtime_mode": str(runtime_modes[0]),
                     "runtime_samples": runtime_samples,
                     "mean_runtime_ms": (
                         runtime_total_ms / runtime_samples

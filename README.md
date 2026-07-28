@@ -1,12 +1,12 @@
 # REPATH Evaluation Suite
 
-A reproducible evaluation suite for REPATH and five Web-UI element-matching baselines. It combines baseline benchmarking, optional independent end-to-end query timing, REPATH ranking evaluation, exhaustive feature-group ablation reporting, feature-importance reporting, and confidence-margin calibration.
+A reproducible evaluation suite for REPATH and five Web-UI element-matching baselines. It combines baseline benchmarking, cold and page-pair amortized runtime measurement, REPATH ranking evaluation, exhaustive feature-group ablation reporting, feature-importance reporting, and confidence-margin calibration.
 
 ## Capabilities
 
 - Benchmark WATER, VISTA, SFTM, WebEvo, Similo, and REPATH under one fixed Top-1 protocol.
 - Select `test` (default), `development`, `all`, one site, or multiple explicit sites.
-- Keep the default benchmark fast and omit runtime output unless `--measure-runtime` is enabled.
+- Run accuracy-only benchmarks by default, or select cold end-to-end or page-pair-amortized runtime benchmarking with `--runtime-mode cold` or `--runtime-mode amortized`.
 - Evaluate a user-selected REPATH confidence margin with `--tau`.
 - Select a margin automatically using pooled development out-of-fold precision and coverage constraints.
 - Display the latest REPATH ranking, calibration, exhaustive ablation, feature-vector, and feature-importance results directly in this README.
@@ -125,13 +125,13 @@ Site and group matching is case-insensitive.
 
 ## Benchmarking
 
-Run the complete benchmark with:
+Run the complete accuracy benchmark with:
 
 ```bash
 repath-eval benchmark
 ```
 
-By default, this evaluates WATER, VISTA, SFTM, WebEvo, Similo, and REPATH on the held-out test sites with one repetition. Runtime measurement is disabled, and results are written to `results/benchmark`. Existing result files in that directory are overwritten.
+By default, this evaluates WATER, VISTA, SFTM, WebEvo, Similo, and REPATH on the held-out test sites with one repetition. Runtime measurement is omitted, and results are written to `results/benchmark`. Existing result files in that directory are overwritten.
 
 ### Benchmark arguments
 
@@ -140,7 +140,7 @@ By default, this evaluates WATER, VISTA, SFTM, WebEvo, Similo, and REPATH on the
 | `--algorithms` | Algorithms to evaluate | `water vista sftm webevo similo repath` |
 | `--sites` | Site group, one site, or multiple explicit sites | `test` |
 | `--repeats` | Number of complete benchmark repetitions; must be a positive integer | `1` |
-| `--measure-runtime` | Enable independent end-to-end timing for every query | Disabled |
+| `--runtime-mode` | Runtime protocol: `cold` or `amortized`; omit for accuracy-only execution | Not set |
 | `--output` | Directory used to save benchmark result files | `results/benchmark` |
 
 Run only the five baseline algorithms:
@@ -183,41 +183,63 @@ repath-eval benchmark \
   --output results/five_repeats
 ```
 
-### Optional end-to-end query runtime
+### Runtime protocols
 
-Runtime measurement is disabled by default. Fast execution prepares a page pair and matcher once and omits runtime columns.
+The benchmark supports accuracy-only execution and two timed protocols. Both timed protocols use the same fixed eligible queries and report `runtime_mode`, `runtime_samples`, and `mean_runtime_ms` in the result summaries.
 
-For more reproducible runtime measurements, restrict common numerical libraries to one CPU thread before running the timed benchmark:
+| Runtime configuration | Execution | Reported value |
+| --------------------- | --------- | -------------- |
+| Omitted | Prepares each matcher once per page pair and evaluates all queries without recording time | Accuracy only |
+| `--runtime-mode cold` | Independently loads the page data, constructs and prepares the matcher, and executes the match for every query | Mean cold end-to-end time per query |
+| `--runtime-mode amortized` | Loads and prepares once per page pair, executes all associated queries, and divides the complete timed page-pair duration by the number of eligible queries | Mean page-pair amortized time per query |
+
+For more reproducible runtime measurements, restrict common numerical libraries to one CPU thread before running either timed protocol:
 
 ```bash
 export PYTHONHASHSEED=0
 export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
 export OPENBLAS_NUM_THREADS=1
-
-repath-eval benchmark \
-  --measure-runtime \
-  --output results/end_to_end_runtime
 ```
 
 `PYTHONHASHSEED=0` makes Python hash-based ordering deterministic. The thread variables reduce CPU oversubscription and runtime variation between runs.
 
-With `--measure-runtime`, each query independently loads page data, constructs and prepares the matcher, and executes the match inside the timer. REPATH resolves or downloads SBERT before timing; timed executions load it locally. Network download time is excluded, while local model loading and inference are included.
+#### Cold end-to-end runtime
 
-In normal fast mode, each matcher is prepared once per page pair and can reuse algorithm-specific page-level state across queries. WATER reuses the loaded page data, SFTM reuses its tree mapping, Similo reuses candidate and neighbour metadata, VISTA reuses decoded screenshots and scene descriptors, WebEvo reuses ordered candidate metadata, and REPATH reuses prepared feature context. With `--measure-runtime`, a fresh page pair and matcher are created and prepared inside every query timer, so initialization, preprocessing, and cache construction are included in the reported end-to-end runtime for every algorithm.
+```bash
+repath-eval benchmark \
+  --runtime-mode cold \
+  --output results/runtime_cold
+```
+
+Cold timing creates an independent execution for every query. The timer includes page-data loading, matcher construction, local model and configuration loading where applicable, page-pair preparation, matching, and cleanup. REPATH resolves or downloads SBERT before timing and clears its process model caches, so network download time is excluded while local LightGBM and SBERT loading is included in every timed query.
+
+#### Page-pair amortized runtime
+
+```bash
+repath-eval benchmark \
+  --runtime-mode amortized \
+  --output results/runtime_amortized
+```
+
+Amortized timing represents a running system with application-level models already loaded. REPATH loads and retains its LightGBM and SBERT models before timed page-pair execution. For each site, the timer includes a fresh page load, page-pair preparation, all eligible query matches, and cleanup. The complete elapsed duration is divided by the number of eligible queries.
+
+In accuracy-only and amortized execution, matchers reuse algorithm-specific page-level state across queries. WATER reuses loaded page data, SFTM reuses its tree mapping, Similo reuses candidate and neighbour metadata, VISTA reuses decoded screenshots and scene descriptors, WebEvo reuses ordered candidate metadata, and REPATH reuses prepared feature context.
+
+For cold results, each `query_results.csv` runtime value is an independently timed query execution. For amortized results, each query row receives the page pair's mean amortized runtime so that site and cross-site weighted means remain consistent with the complete timed duration.
 
 ### Benchmark results
 
-Run the held-out benchmark and enter the resulting values in this table. Top-1 accuracy should come from the normal benchmark output. Mean query execution time should come from a separate run with `--measure-runtime`.
+Run the accuracy benchmark and the two runtime protocols separately, then enter the resulting values in this table.
 
-| Algorithm | Top-1 accuracy | Mean end-to-end query time (ms) |
-| --------- | -------------: | ------------------------------: |
-| WATER     |                |                                 |
-| VISTA     |                |                                 |
-| SFTM      |                |                                 |
-| WebEvo    |                |                                 |
-| Similo    |                |                                 |
-| REPATH    |                |                                 |
+| Algorithm | Top-1 accuracy | Mean cold end-to-end time (ms/query) | Mean page-pair amortized time (ms/query) |
+| --------- | -------------: | -----------------------------------: | ----------------------------------------: |
+| WATER     |                |                                      |                                           |
+| VISTA     |                |                                      |                                           |
+| SFTM      |                |                                      |                                           |
+| WebEvo    |                |                                      |                                           |
+| Similo    |                |                                      |                                           |
+| REPATH    |                |                                      |                                           |
 
 ## REPATH confidence-margin calibration
 
@@ -548,7 +570,7 @@ The latest notebook displayed its Top 20 gain-ranked features directly.
 
 ## Output files
 
-A benchmark run writes `query_results.csv`, `site_results.csv`, `summary.csv`, and `run_metadata.json`. Runtime fields appear only with `--measure-runtime`.
+A benchmark run writes `query_results.csv`, `site_results.csv`, `summary.csv`, and `run_metadata.json`. Runtime fields are omitted for accuracy-only execution and included when `--runtime-mode cold` or `--runtime-mode amortized` is selected. The selected protocol is recorded in the `runtime_mode` column and in `run_metadata.json`.
 
 A calibration run writes `tau_margin_summary.csv`, `tau_margin_query_decisions.csv`, and `calibration_metadata.json`. Automatic selection also writes `tau_margin_development_oof_curve.csv`.
 
@@ -556,7 +578,7 @@ A calibration run writes `tau_margin_summary.csv`, `tau_margin_query_decisions.c
 
 The benchmark reads each site's `result/result.json` and uses `matchMap` as the expected old-to-new mapping. Queries whose old grouped node cannot be resolved, or whose old grouped node has `elementType == 1`, are excluded before evaluation. Every remaining query stays in the denominator. A missing prediction, failed match, or algorithm error is incorrect.
 
-Top-1 correctness requires exact equality between the predicted and expected new grouped-node IDs. Fast execution reuses page-level preparation only to reduce execution time; it does not intentionally alter candidates, scores, rankings, predictions, or correctness.
+Top-1 correctness requires exact equality between the predicted and expected new grouped-node IDs. Accuracy-only and amortized execution reuse page-level preparation across queries; this reuse does not intentionally alter candidates, scores, rankings, predictions, or correctness.
 
 ## Baseline attribution and implementation sources
 

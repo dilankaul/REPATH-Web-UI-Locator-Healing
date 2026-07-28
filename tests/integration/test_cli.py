@@ -7,14 +7,15 @@ from repath_evaluation import cli
 
 
 def test_cli_defaults_to_test_group_and_model_artifacts() -> None:
-    args = cli.build_parser().parse_args(
-        ["benchmark", "--algorithms", "water", "--output", "out"]
-    )
+    args = cli.build_parser().parse_args(["benchmark"])
 
     assert args.data_root == "data"
     assert args.sites is None
     assert args.split_config == "configs/site_split.yaml"
-    assert args.measure_runtime is False
+    assert args.runtime_mode is None
+    assert args.algorithms == ["water", "vista", "sftm", "webevo", "similo", "repath"]
+    assert args.repeats == 1
+    assert args.output == "results/benchmark"
     assert args.repath_model == "models/lgb_ranker.txt"
     assert args.repath_config == "models/config_base.pkl"
 
@@ -37,19 +38,14 @@ def test_calibration_defaults_and_manual_tau() -> None:
     assert args.output == "results/calibration"
 
 
-def test_measure_runtime_is_an_optional_boolean_flag() -> None:
-    args = cli.build_parser().parse_args(
-        [
-            "benchmark",
-            "--algorithms",
-            "water",
-            "--output",
-            "out",
-            "--measure-runtime",
-        ]
-    )
+def test_runtime_mode_supports_cold_and_amortized_protocols() -> None:
+    parser = cli.build_parser()
 
-    assert args.measure_runtime is True
+    cold = parser.parse_args(["benchmark", "--runtime-mode", "cold"])
+    amortized = parser.parse_args(["benchmark", "--runtime-mode", "amortized"])
+
+    assert cold.runtime_mode == "cold"
+    assert amortized.runtime_mode == "amortized"
 
 
 def test_inspect_defaults_to_repository_data_directory() -> None:
@@ -125,7 +121,7 @@ def test_run_writes_accuracy_only_outputs_by_default(monkeypatch, tmp_path) -> N
         output=str(output),
         algorithms=["water"],
         repeats=1,
-        measure_runtime=False,
+        runtime_mode=None,
     )
 
     cli.run_command(args)
@@ -146,7 +142,7 @@ def test_run_writes_accuracy_only_outputs_by_default(monkeypatch, tmp_path) -> N
     assert bool(query.loc[0, "correct"]) is False
 
 
-def test_run_writes_runtime_outputs_only_when_enabled(monkeypatch, tmp_path) -> None:
+def test_run_writes_runtime_outputs_when_runtime_mode_is_selected(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(cli, "_select_sites", lambda *_: [tmp_path / "site"])
     monkeypatch.setattr(cli, "_factory", lambda *_args, **_kwargs: object)
     monkeypatch.setattr(
@@ -164,6 +160,7 @@ def test_run_writes_runtime_outputs_only_when_enabled(monkeypatch, tmp_path) -> 
                     "correct": True,
                     "status": "ok",
                     "details": "",
+                    "runtime_mode": "cold",
                     "runtime_ms": 12.0,
                 }
             ],
@@ -175,6 +172,7 @@ def test_run_writes_runtime_outputs_only_when_enabled(monkeypatch, tmp_path) -> 
                 "correct_top1": 1,
                 "top1_accuracy": 1.0,
                 "no_prediction": 0,
+                "runtime_mode": "cold",
                 "runtime_samples": 1,
                 "runtime_total_ms": 12.0,
                 "mean_runtime_ms": 12.0,
@@ -189,7 +187,7 @@ def test_run_writes_runtime_outputs_only_when_enabled(monkeypatch, tmp_path) -> 
         output=str(output),
         algorithms=["water"],
         repeats=1,
-        measure_runtime=True,
+        runtime_mode="cold",
     )
 
     cli.run_command(args)
@@ -197,6 +195,9 @@ def test_run_writes_runtime_outputs_only_when_enabled(monkeypatch, tmp_path) -> 
     query = pd.read_csv(output / "query_results.csv")
     site = pd.read_csv(output / "site_results.csv")
     summary = pd.read_csv(output / "summary.csv")
+    assert query.loc[0, "runtime_mode"] == "cold"
     assert query.loc[0, "runtime_ms"] == 12.0
+    assert site.loc[0, "runtime_mode"] == "cold"
     assert site.loc[0, "mean_runtime_ms"] == 12.0
+    assert summary.loc[0, "runtime_mode"] == "cold"
     assert summary.loc[0, "mean_runtime_ms"] == 12.0

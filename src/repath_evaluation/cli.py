@@ -84,7 +84,7 @@ def _select_sites(
     return selected
 
 
-def _factory(name: str, args, measure_runtime: bool = False):
+def _factory(name: str, args, runtime_mode: str | None = None):
     normalized = name.casefold()
     if normalized == "water":
         return WaterMatcher
@@ -105,8 +105,8 @@ def _factory(name: str, args, measure_runtime: bool = False):
             model_path=Path(args.repath_model),
             config_path=Path(args.repath_config),
             device=args.repath_device,
-            cache_models=not measure_runtime,
-            local_files_only=measure_runtime,
+            cache_models=runtime_mode != "cold",
+            local_files_only=runtime_mode == "cold",
         )
     raise SystemExit(f"Unknown algorithm: {name}")
 
@@ -158,26 +158,27 @@ def benchmark_command(args) -> None:
     sites = _select_sites(data_root, args.sites, args.split_config)
     output = Path(args.output)
     output.mkdir(parents=True, exist_ok=True)
-    measure_runtime = bool(getattr(args, "measure_runtime", False))
+    runtime_mode = getattr(args, "runtime_mode", None)
     all_rows = []
     site_summaries = []
 
     for algorithm in args.algorithms:
-        if measure_runtime and algorithm.casefold() == "repath":
-            preload_factory = _factory(algorithm, args, measure_runtime=False)
+        if runtime_mode is not None and algorithm.casefold() == "repath":
+            preload_factory = _factory(algorithm, args, runtime_mode=None)
             preload_matcher = preload_factory()
             preload_matcher.close()
             del preload_matcher
-            clear_model_caches()
+            if runtime_mode == "cold":
+                clear_model_caches()
 
-        factory = _factory(algorithm, args, measure_runtime=measure_runtime)
+        factory = _factory(algorithm, args, runtime_mode=runtime_mode)
         for repeat in range(1, args.repeats + 1):
             for site in sites:
                 rows, summary = run_site(
                     site,
                     factory,
                     repeat,
-                    measure_runtime=measure_runtime,
+                    runtime_mode=runtime_mode,
                     algorithm_name=_ALGORITHM_DISPLAY_NAMES[algorithm.casefold()],
                 )
                 all_rows.extend(rows)
@@ -188,8 +189,11 @@ def benchmark_command(args) -> None:
                     f"{summary['correct_top1']}/{summary['framework_queries']} "
                     f"({summary['top1_accuracy']:.4f})"
                 )
-                if measure_runtime:
-                    message += f" | mean {summary['mean_runtime_ms']:.3f} ms/query"
+                if runtime_mode is not None:
+                    message += (
+                        f" | {runtime_mode} mean "
+                        f"{summary['mean_runtime_ms']:.3f} ms/query"
+                    )
                 print(message)
 
     query_frame = pd.DataFrame(all_rows)
@@ -349,12 +353,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Number of complete benchmark repetitions (default: 1)",
     )
     benchmark.add_argument(
-        "--measure-runtime",
-        action="store_true",
+        "--runtime-mode",
+        choices=["cold", "amortized"],
+        default=None,
         help=(
-            "Measure independent end-to-end runtime for every query. "
-            "Without this flag, fast prepared-page execution is used and "
-            "runtime columns are omitted."
+            "Runtime protocol. Omit for accuracy-only execution; "
+            "'cold' loads and prepares independently for every query; "
+            "'amortized' times page loading, preparation, and all queries "
+            "once per page pair, then divides the total by eligible queries."
         ),
     )
     benchmark.add_argument(
